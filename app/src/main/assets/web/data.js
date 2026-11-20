@@ -123,6 +123,11 @@ window.DG_DATA = {
   },
 
   changelog: [
+    { v: '1.0.2', date: '20.11.2026', items: [
+      'Wiki-Abfragen laufen jetzt über die Browser-Engine der App – die Bot-Prüfung des Wikis greift seltener',
+      'Automatischer Ersatz: Ist das Haupt-Wiki blockiert, lädt die App die Inhalte aus dem Fandom-Wiki',
+      'Prüfungs-Fenster öffnet die normale Wiki-Startseite'
+    ]},
     { v: '1.0', date: '20.11.2026', items: [
       'Erste Version des Dreamlight Guide',
       'Live-Suche im kompletten Dreamlight Valley Wiki (über 11.000 Einträge)',

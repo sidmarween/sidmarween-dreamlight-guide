@@ -116,6 +116,32 @@ class Bridge(private val activity: MainActivity) {
         }
     }
 
+    /** Gespeicherte Antwort holen, wenn sie jünger als maxAgeSec ist. */
+    @JavascriptInterface
+    fun cacheGet(id: String, url: String, maxAgeSec: Int) {
+        net.execute {
+            val out = JSONObject()
+            val file = File(cacheDir, sha1(url))
+            val age = if (file.exists()) (System.currentTimeMillis() - file.lastModified()) / 1000 else Long.MAX_VALUE
+            if (age < maxAgeSec) {
+                try {
+                    out.put("ok", true).put("body", file.readText()).put("savedAt", file.lastModified())
+                } catch (e: Exception) { out.put("ok", false) }
+            } else out.put("ok", false)
+            activity.resolve(id, out)
+        }
+    }
+
+    /** Antwort speichern, die die Oberfläche selbst geladen hat. */
+    @JavascriptInterface
+    fun cachePut(url: String, body: String) {
+        val host = Uri.parse(url).host ?: return
+        if (!ALLOWED_HOSTS.contains(host)) return
+        net.execute {
+            try { File(cacheDir, sha1(url)).writeText(body) } catch (_: Exception) {}
+        }
+    }
+
     @JavascriptInterface
     fun cacheInfo(id: String) {
         net.execute {
@@ -247,7 +273,7 @@ class Bridge(private val activity: MainActivity) {
         MessageDigest.getInstance("SHA-1").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
 
     companion object {
-        val ALLOWED_HOSTS = setOf("dreamlightvalleywiki.com", "www.dreamlightvalleywiki.com")
+        val ALLOWED_HOSTS = setOf("dreamlightvalleywiki.com", "www.dreamlightvalleywiki.com", "disneydreamlightvalley.fandom.com")
     }
 }
 

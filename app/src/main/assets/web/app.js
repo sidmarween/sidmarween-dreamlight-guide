@@ -6,7 +6,12 @@
   const D = window.DG_DATA;
   const M = window.DG_MASCOTS;
   const WIKI = 'https://dreamlightvalleywiki.com';
-  const API = WIKI + '/api.php';
+  const SOURCES = [
+    { id: 'ddvw', name: 'Dreamlight Valley Wiki', base: WIKI, api: WIKI + '/api.php', path: '/', licence: 'CC BY-NC-SA 4.0' },
+    { id: 'fandom', name: 'Disney Dreamlight Valley Wiki (Fandom)', base: 'https://disneydreamlightvalley.fandom.com',
+      api: 'https://disneydreamlightvalley.fandom.com/api.php', path: '/wiki/', licence: 'CC BY-SA 3.0' }
+  ];
+  const pageUrl = (src, t) => src.base + src.path + encodeURIComponent(t.replace(/ /g, '_'));
   const hasAndroid = typeof window.Android !== 'undefined';
   const view = document.getElementById('view');
 
@@ -20,10 +25,10 @@
   const catHref = c => '#/cat/' + encodeURIComponent(c);
   const chunks = (arr, n) => { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
 
-  function absUrl(u) {
+  function absUrl(u, base) {
     if (!u) return u;
     if (u.startsWith('//')) return 'https:' + u;
-    if (u.startsWith('/')) return WIKI + u;
+    if (u.startsWith('/')) return (base || WIKI) + u;
     return u;
   }
 
@@ -64,39 +69,89 @@
   }
 
   /* ------------------------------------------------------------ Wiki-API */
-  async function browserFetch(url) {
+  /* Daten werden zuerst über die Browser-Engine der App geladen (wird von der
+   * Sicherheitsprüfung des Wikis wie ein normaler Browser behandelt), dann über
+   * Android direkt. Klappt beides nicht, springt die App auf das Fandom-Wiki um. */
+  let primaryBlockedUntil = 0;
+
+  function finishBody(body, src, meta) {
+    let data;
+    try { data = JSON.parse(body); } catch (e) { throw new Error('Ungültige Antwort vom Wiki'); }
+    if (data.error) { const e = new Error(data.error.info || data.error.code); e.code = data.error.code; throw e; }
+    data.__src = src;
+    data.__offline = !!meta.offline;
+    data.__savedAt = meta.savedAt;
+    return data;
+  }
+
+  async function engineFetch(url) {
     try {
-      const r = await fetch(url + '&origin=*');
-      const body = await r.text();
-      return r.ok ? { ok: true, body } : { ok: false, status: r.status };
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 12000);
+      const r = await fetch(url + '&origin=*', { signal: ctl.signal, credentials: 'omit' });
+      clearTimeout(t);
+      const txt = await r.text();
+      if (r.ok && txt.trim().startsWith('{')) return { ok: true, body: txt };
+      return { ok: false, status: r.status, challenge: /Just a moment|challenge/i.test(txt) || r.status === 403 || r.status === 503 };
     } catch (e) { return { ok: false, status: 0, error: String(e) }; }
+  }
+
+  async function apiFrom(src, qs, maxAge, stale) {
+    const url = src.api + '?' + qs;
+    if (hasAndroid && maxAge > 0) {
+      const c = await call('cacheGet', url, maxAge | 0);
+      if (c.ok) return finishBody(c.body, src, {});
+    }
+    const r1 = await engineFetch(url);
+    if (r1.ok) {
+      if (hasAndroid) { try { window.Android.cachePut(url, r1.body); } catch (e) { /* egal */ } }
+      return finishBody(r1.body, src, {});
+    }
+    let challenge = !!r1.challenge;
+    if (hasAndroid) {
+      const r2 = await call('fetch', url, 0);
+      if (r2.ok && !r2.cached) return finishBody(r2.body, src, {});
+      if (r2.ok && r2.cached && !stale.body) { stale.body = r2.body; stale.src = src; stale.savedAt = r2.savedAt; }
+      challenge = challenge || !!r2.challenge;
+    }
+    const e = new Error(challenge ? 'challenge' : 'Keine Verbindung');
+    e.challenge = challenge; e.status = r1.status || 0;
+    throw e;
   }
 
   async function api(params, maxAge) {
     const p = Object.assign({ format: 'json', formatversion: '2' }, params);
-    const url = API + '?' + Object.keys(p).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(p[k])).join('&');
-    const r = hasAndroid ? await call('fetch', url, (maxAge || 0) | 0) : await browserFetch(url);
-    if (!r.ok) {
-      const e = new Error(r.challenge ? 'challenge' : (r.error || ('HTTP ' + (r.status || 0))));
-      e.challenge = !!r.challenge; e.status = r.status;
-      throw e;
+    const qs = Object.keys(p).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(p[k])).join('&');
+    const order = Date.now() < primaryBlockedUntil ? [SOURCES[1], SOURCES[0]] : SOURCES;
+    const stale = {};
+    let lastErr = null, codeErr = null;
+    for (const src of order) {
+      try {
+        const d = await apiFrom(src, qs, maxAge || 0, stale);
+        if (src === SOURCES[0]) primaryBlockedUntil = 0;
+        return d;
+      } catch (e) {
+        if (e.code) {
+          if (src === SOURCES[0]) throw e;      // echte Antwort des Haupt-Wikis
+          codeErr = codeErr || e; continue;     // Fandom kennt die Seite nicht → Haupt-Wiki fragen
+        }
+        lastErr = e;
+        if (src === SOURCES[0]) primaryBlockedUntil = Date.now() + 15 * 60e3;
+      }
     }
-    let data;
-    try { data = JSON.parse(r.body); } catch (e) { throw new Error('Ungültige Antwort vom Wiki'); }
-    if (data.error) { const e = new Error(data.error.info || data.error.code); e.code = data.error.code; throw e; }
-    data.__offline = !!(r.cached && ('status' in r));
-    data.__savedAt = r.savedAt;
-    return data;
+    if (stale.body) return finishBody(stale.body, stale.src, { offline: true, savedAt: stale.savedAt });
+    throw codeErr || lastErr || new Error('Keine Verbindung');
   }
 
   /* Abfrage mit Fortsetzung – führt Seiten (mit Kategorien) zusammen. */
   async function apiPages(params, maxAge, maxIter) {
     const pages = new Map();
     let cont = {};
-    let offline = false;
+    let offline = false, base = WIKI;
     for (let i = 0; i < (maxIter || 4); i++) {
       const d = await api(Object.assign({}, params, cont), maxAge);
       offline = offline || d.__offline;
+      base = (d.__src && d.__src.base) || base;
       ((d.query && d.query.pages) || []).forEach(p => {
         const ex = pages.get(p.pageid || p.title);
         if (ex) {
@@ -109,6 +164,7 @@
     }
     const arr = Array.from(pages.values());
     arr.__offline = offline;
+    arr.__base = base;
     return arr;
   }
 
@@ -135,7 +191,7 @@
         const p = pages[tt];
         const m = {
           title: tt, missing: !p || !!p.missing || !!p.invalid,
-          thumb: p && p.thumbnail ? absUrl(p.thumbnail.source) : null,
+          thumb: p && p.thumbnail ? absUrl(p.thumbnail.source, d.__src.base) : null,
           cats: ((p && p.categories) || []).map(c => c.title.replace(/^Category:/, ''))
         };
         metaCache.set(t, m); out[t] = m;
@@ -340,7 +396,7 @@
   function errorHtml(e, extra) {
     if (e && e.challenge) {
       return `<div class="note warn"><span class="nm">${M.mumi(44)}</span><div><b>Das Wiki möchte kurz prüfen, dass du kein Bot bist.</b><br>` +
-        `Tippe auf „Prüfung öffnen“, bestätige dort ggf. die Abfrage und tippe dann auf „Fertig“.` +
+        `Auch das Ersatz-Wiki war nicht erreichbar. Prüfe das Internet und versuche es nochmal – oder tippe auf „Prüfung öffnen“.` +
         `<div class="btns"><button class="btn small" data-act="verify">Prüfung öffnen</button><button class="btn small ghost" data-act="retry">Nochmal versuchen</button></div></div></div>`;
     }
     const offline = e && (e.status === 0 || /Unknown|Timeout|Connect|resolve/i.test(e.message || ''));
@@ -580,24 +636,29 @@
   function titleFromHref(href) {
     if (!href) return null;
     let h = href;
-    if (h.startsWith(WIKI)) h = h.slice(WIKI.length);
-    else if (h.startsWith('//dreamlightvalleywiki.com')) h = h.slice('//dreamlightvalleywiki.com'.length);
-    else if (h.startsWith('https://www.dreamlightvalleywiki.com')) h = h.slice('https://www.dreamlightvalleywiki.com'.length);
+    for (const src of SOURCES) {
+      const nb = src.base.replace(/^https:/, '');
+      const www = src.base.replace('https://', 'https://www.');
+      if (h.startsWith(src.base)) { h = h.slice(src.base.length); break; }
+      if (h.startsWith(www)) { h = h.slice(www.length); break; }
+      if (h.startsWith(nb)) { h = h.slice(nb.length); break; }
+    }
     if (!h.startsWith('/')) return null;
     if (/^\/(images|resources|load\.php|api\.php|skins|extensions)\b/.test(h)) return null;
     let t;
-    if (h.startsWith('/index.php')) {
+    if (/^\/(wiki\/)?index\.php/.test(h)) {
       const qs = new URLSearchParams(h.split('?')[1] || '');
       t = qs.get('title');
-      if (!t) return null;
+      if (!t || qs.get('action') === 'edit') return t ? t.replace(/_/g, ' ') : null;
     } else {
+      if (h.startsWith('/wiki/')) h = h.slice(5);
       t = h.slice(1).split('#')[0].split('?')[0];
       try { t = decodeURIComponent(t); } catch (e) { /* lassen */ }
     }
-    return t.replace(/_/g, ' ');
+    return t ? t.replace(/_/g, ' ') : null;
   }
 
-  function processWiki(html) {
+  function processWiki(html, base) {
     const doc = new DOMParser().parseFromString('<div id="wr">' + html + '</div>', 'text/html');
     const root = doc.getElementById('wr');
     $$('script,style,link,meta,noscript,.mw-editsection,.toc,#toc,.noprint,.mw-empty-elt,.printfooter,.catlinks', root).forEach(n => n.remove());
@@ -606,12 +667,12 @@
     $$('img', root).forEach(img => {
       const ds = img.getAttribute('data-src');
       const src = ds || img.getAttribute('src');
-      if (src) img.setAttribute('src', absUrl(src));
+      if (src) img.setAttribute('src', absUrl(src, base));
       const ss = img.getAttribute('data-srcset') || img.getAttribute('srcset');
       if (ss) {
         img.setAttribute('srcset', ss.split(',').map(p => {
           const bits = p.trim().split(/\s+/);
-          return absUrl(bits[0]) + (bits.length > 1 ? ' ' + bits.slice(1).join(' ') : '');
+          return absUrl(bits[0], base) + (bits.length > 1 ? ' ' + bits.slice(1).join(' ') : '');
         }).join(', '));
       }
       img.removeAttribute('data-src'); img.removeAttribute('data-srcset');
@@ -623,13 +684,13 @@
     $$('a', root).forEach(a => {
       const href = a.getAttribute('href') || '';
       const t = titleFromHref(href);
+      if (a.classList.contains('image') || a.classList.contains('mw-file-description') || (t && /^(File|Datei|Image):/i.test(t))) {
+        const span = doc.createElement('span');
+        while (a.firstChild) span.appendChild(a.firstChild);
+        a.replaceWith(span);
+        return;
+      }
       if (t !== null) {
-        if (/^(File|Datei|Image):/i.test(t) || a.classList.contains('image') || a.classList.contains('mw-file-description')) {
-          const span = doc.createElement('span');
-          while (a.firstChild) span.appendChild(a.firstChild);
-          a.replaceWith(span);
-          return;
-        }
         if (/^(Special|User|Talk|Template|Help|MediaWiki|Dreamlight Valley Wiki):/i.test(t)) {
           a.removeAttribute('href'); a.classList.add('dead'); return;
         }
@@ -642,7 +703,7 @@
         a.setAttribute('href', '');
       } else if (/^(https?:)?\/\//.test(href)) {
         a.classList.add('ext');
-        a.setAttribute('data-ext', absUrl(href));
+        a.setAttribute('data-ext', absUrl(href, base));
         a.setAttribute('href', '');
       }
     });
@@ -751,14 +812,16 @@
     const isQuest = kind.k === 'quest';
     addHistory(realTitle, kind.k);
 
-    const root = processWiki(P.text || '');
+    const SRC = d.__src || SOURCES[0];
+    const root = processWiki(P.text || '', SRC.base);
     const nChecks = isQuest ? makeChecklist(root) : 0;
 
     view.innerHTML =
       `<header class="top"><button class="iconbtn" data-act="back" aria-label="Zurück">←</button><h1 id="ptitle">${esc(realTitle)}</h1>
         <button class="iconbtn ${isFav(realTitle) ? 'on' : ''}" id="fav" aria-label="Merken">${isFav(realTitle) ? '⭐' : '☆'}</button>
-        <button class="iconbtn" data-act="ext" data-url="${esc(WIKI + '/' + encodeURIComponent(realTitle.replace(/ /g, '_')))}" aria-label="Im Wiki öffnen">↗</button></header>` +
+        <button class="iconbtn" data-act="ext" data-url="${esc(pageUrl(SRC, realTitle))}" aria-label="Im Wiki öffnen">↗</button></header>` +
       (d.__offline ? offlineNote(d.__savedAt) : '') +
+      (SRC.id === 'fandom' ? `<div class="note"><span>🔁</span><div>Das Haupt-Wiki ist gerade nicht erreichbar – diese Seite kommt aus dem Ersatz-Wiki (Fandom). Dort sind manche Einträge kürzer.</div></div>` : '') +
       `<div class="dhead fade-in"><span class="kind">${kind.e} ${esc(kind.label)}</span><h2 id="dtitle">${esc(realTitle)}</h2><div class="orig" id="dorig"></div></div>` +
       (isQuest ? `<div class="questbox" id="qbox"></div>` : '') +
       `<div class="jump" id="jump"></div><div id="trslot"></div>` +
@@ -767,7 +830,7 @@
         <div class="card"><div class="muted small">Welche Figuren, Missionen, Rezepte und Orte verweisen auf „${esc(realTitle)}“?</div>
         <div class="btns"><button class="btn small" id="relbtn">🔗 Wo kommt das vor?</button></div><div id="relbox"></div></div></div>` +
       (cats.length ? `<div class="section"><div class="section-title">Kategorien</div><div class="chips">${cats.map(c => `<a class="chip" href="${catHref(c)}">${esc(c)}</a>`).join('')}</div></div>` : '') +
-      `<div class="licence">Quelle: <a href="" data-act="ext" data-url="${esc(WIKI + '/' + encodeURIComponent(realTitle.replace(/ /g, '_')))}">Dreamlight Valley Wiki – ${esc(realTitle)}</a>, CC BY-NC-SA 4.0. Spielinhalte © Disney/Gameloft.${settings.autoTr ? ' Deutsche Fassung maschinell übersetzt.' : ''}</div>`;
+      `<div class="licence">Quelle: <a href="" data-act="ext" data-url="${esc(pageUrl(SRC, realTitle))}">${esc(SRC.name)} – ${esc(realTitle)}</a>, ${SRC.licence}. Spielinhalte © Disney/Gameloft.${settings.autoTr ? ' Deutsche Fassung maschinell übersetzt.' : ''}</div>`;
 
     const wiki = $('#wiki');
     while (root.firstChild) wiki.appendChild(root.firstChild);
@@ -805,7 +868,7 @@
   }
 
   function buildJump(wiki) {
-    const hs = $$('h2', wiki).filter(h => h.id && h.textContent.trim());
+    const hs = $$('h2', wiki).filter(h => h.textContent.trim());
     const box = $('#jump');
     if (!box) return;
     if (hs.length < 2) { box.innerHTML = ''; return; }
@@ -1048,7 +1111,7 @@
       const g = groups[k];
       g.items.sort((a, b) => a.title.localeCompare(b.title));
       return `<div class="grp"><h4>${g.kind.e} ${names[k]} (${g.items.length})</h4><div class="chips">${g.items.map(p =>
-        `<a class="chip" href="${pageHref(p.title)}">${p.thumbnail ? `<img src="${esc(absUrl(p.thumbnail.source))}" alt="" loading="lazy">` : ''}${esc(p.title)}</a>`).join('')}</div></div>`;
+        `<a class="chip" href="${pageHref(p.title)}">${p.thumbnail ? `<img src="${esc(absUrl(p.thumbnail.source, pages.__base))}" alt="" loading="lazy">` : ''}${esc(p.title)}</a>`).join('')}</div></div>`;
     }).join('');
     box.innerHTML = html || '<div class="muted small" style="margin-top:10px">Keine Verweise gefunden.</div>';
     $$('img', box).forEach(img => img.addEventListener('error', () => img.remove(), { once: true }));
@@ -1277,6 +1340,7 @@
         <div class="card"><h3>Verbindung zum Wiki</h3>
           <div class="muted small">Falls Seiten nicht laden: Das Wiki ist durch eine Sicherheitsprüfung geschützt. Hier kannst du sie einmal selbst bestätigen.</div>
           <div class="btns"><button class="btn small" data-act="verify">Prüfung öffnen</button><button class="btn small ghost" data-act="ext" data-url="${WIKI}">Wiki im Browser</button></div>
+          <div class="muted small" style="margin-top:8px">Ist das Haupt-Wiki blockiert, nutzt die App automatisch das Fandom-Wiki als Ersatz.</div>
         </div>
         <div class="card"><h3>Fortschritt</h3>
           <div class="muted small">Merkliste, Verlauf und abgehakte Missionen werden nur auf diesem Handy gespeichert.</div>
@@ -1286,7 +1350,8 @@
           <div>Version ${esc(ver)}</div>
           <div class="muted small" style="margin-top:6px">Inoffizielle Fan-App für Disney Dreamlight Valley – nicht mit Disney oder Gameloft verbunden.
           Alle Spielinhalte und -bilder © Disney/Gameloft. Texte und Daten stammen live aus dem <a href="" data-act="ext" data-url="${WIKI}">Dreamlight Valley Wiki</a>
-          (Lizenz <a href="" data-act="ext" data-url="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.de">CC BY-NC-SA 4.0</a>) und werden in der App
+          (Lizenz <a href="" data-act="ext" data-url="https://creativecommons.org/licenses/by-nc-sa/4.0/deed.de">CC BY-NC-SA 4.0</a>) bzw. als Ersatz aus dem
+          <a href="" data-act="ext" data-url="https://disneydreamlightvalley.fandom.com">Fandom-Wiki</a> (CC BY-SA 3.0) und werden in der App
           maschinell übersetzt. Danke an alle Wiki-Autorinnen und -Autoren!</div>
           <div style="margin-top:10px;font-weight:700">© marween</div>
         </div>

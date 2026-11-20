@@ -12,7 +12,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 /**
@@ -46,6 +48,10 @@ class MainActivity : Activity() {
             mediaPlaybackRequiresUserGesture = true
             cacheMode = WebSettings.LOAD_DEFAULT
             textZoom = 100
+        }
+        // Ohne App-Kennung im Header wirken Anfragen wie aus einem normalen Browser
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(webView.settings, emptySet())
         }
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)

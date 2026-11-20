@@ -12,6 +12,8 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 /**
  * Öffnet die Wiki-Seite in einem normalen Browserfenster, damit eine
@@ -37,7 +39,7 @@ class VerifyActivity : Activity() {
             setPadding(24, 16, 16, 16)
         }
         val info = TextView(this).apply {
-            text = "Prüfung ggf. bestätigen – sobald Text mit { … } erscheint, auf Fertig tippen"
+            text = "Prüfung ggf. bestätigen – sobald das Wiki erscheint, auf Fertig tippen"
             setTextColor(Color.WHITE)
             textSize = 14f
         }
@@ -54,7 +56,10 @@ class VerifyActivity : Activity() {
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.webViewClient = WebViewClient()
-        web.loadUrl("https://dreamlightvalleywiki.com/api.php?action=query&meta=siteinfo&format=json")
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(web.settings, emptySet())
+        }
+        web.loadUrl("https://dreamlightvalleywiki.com/Dreamlight_Valley_Wiki")
 
         root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(web, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))

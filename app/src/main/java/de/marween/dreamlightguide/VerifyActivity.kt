@@ -37,7 +37,7 @@ class VerifyActivity : Activity() {
             setPadding(24, 16, 16, 16)
         }
         val info = TextView(this).apply {
-            text = "Wiki öffnen und ggf. Prüfung bestätigen"
+            text = "Prüfung ggf. bestätigen – sobald Text mit { … } erscheint, auf Fertig tippen"
             setTextColor(Color.WHITE)
             textSize = 14f
         }

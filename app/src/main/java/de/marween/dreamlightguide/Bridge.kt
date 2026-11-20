@@ -167,7 +167,7 @@ class Bridge(private val activity: MainActivity) {
             try {
                 val model = TranslateRemoteModel.Builder(TranslateLanguage.GERMAN).build()
                 val ready = Tasks.await(RemoteModelManager.getInstance().isModelDownloaded(model), 20, TimeUnit.SECONDS)
-                out.put("ok", true).put("ready", ready)
+                out.put("ok", true).put("ready", ready == true)
             } catch (e: Exception) {
                 out.put("ok", false).put("error", e.message ?: "Fehler")
             }
